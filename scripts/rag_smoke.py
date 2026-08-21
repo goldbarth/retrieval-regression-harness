@@ -1,17 +1,21 @@
 """Manual smoke check for the tool-augmented RAG path. Needs a valid .env.
 
-This is the only check that can say whether SYSTEM_PROMPT works. Every test in
-tests/test_rag.py fakes the ToolCompleter, so they prove that a prompt is
-passed on, never that the model obeys it. A model that answers from its weights
-instead of calling the tool passes all of them.
+This is the only check that can say whether RAG_SYSTEM_PROMPT works. Every test
+in tests/test_rag.py fakes the StructuredToolCompleter, so they prove that a
+prompt is passed on, never that the model obeys it. A model that answers from
+its weights instead of calling the tool passes all of them.
 
-Two separate questions per case, and the run only answers the first by itself:
+Three questions per case, and the run now answers the first two by itself:
   called    - did the model use the tool at all (rounds carry the names)
-  grounded  - does the answer rest on what came back, with a doc_id#section
+  cited     - does every citation name a section this corpus actually has
+  grounded  - does the prose actually rest on what came back
 
-The second one needs a human reading the output. That is why the cases are
-built so that the corpus and the model's own knowledge disagree: an ungrounded
-answer is then visibly wrong rather than merely unsourced.
+"cited" became machine-checkable with commit 4. Before the citations were a
+field, they were prose in three different formats and a human had to read them;
+now the doc_id and section arrive as data and can be compared against _SECTIONS.
+Only "grounded" still needs a human, which is why the cases are built so that
+the corpus and the model's own knowledge disagree: an ungrounded answer is then
+visibly wrong rather than merely unsourced.
 
 Usage:
     uv run python scripts/rag_smoke.py
@@ -22,8 +26,9 @@ Spends tokens: one run per case, each up to max_rounds provider calls.
 from typing import Any
 
 from harness.api.dependencies import get_llm_client, get_llm_config
-from harness.api.routers.rag import SYSTEM_PROMPT
 from harness.core.interfaces import SectionHit, ToolSpec
+from harness.core.prompts import RAG_SYSTEM_PROMPT
+from harness.core.rag import RagAnswer
 from harness.core.tools import build_section_search_tool
 from harness.infrastructure.retrieval.stub import StubCorpus
 
@@ -75,15 +80,18 @@ if __name__ == "__main__":
     config = get_llm_config()
     tools: list[ToolSpec[Any]] = [build_section_search_tool(StubCorpus(_SECTIONS))]
 
+    known = {(s.doc_id, s.section) for s in _SECTIONS}
+
     print(f"model: {config.model_name}")
-    print(f"prompt:\n{SYSTEM_PROMPT}\n")
+    print(f"prompt:\n{RAG_SYSTEM_PROMPT}\n")
 
     for label, question in CASES.items():
-        result = llm.complete_with_tools(
-            system_prompt=SYSTEM_PROMPT,
+        result = llm.complete_with_tools_structured(
+            system_prompt=RAG_SYSTEM_PROMPT,
             user_message=question,
             config=config,
             tools=tools,
+            schema=RagAnswer,
         )
 
         called = [name for round_ in result.rounds for name in round_.tool_names]
@@ -93,11 +101,36 @@ if __name__ == "__main__":
         # more line of output. "grounded" stays for the human below.
         verdict = "ok" if called else "FAILED, answered without the tool"
 
+        answer = result.parsed
+        if answer is None:
+            # Only reachable when stop_reason is not "completed". Printing the
+            # partial text beats printing nothing, and stop_reason says why.
+            cited = f"no parsed answer ({result.stop_reason})"
+            body = result.text
+            citations = "none"
+        else:
+            # The check the field made possible: a citation that names no
+            # section of this corpus is invented, and before commit 4 that was
+            # only visible to someone who knew _SECTIONS by heart.
+            dead = [
+                f"{c.doc_id}#{c.section}"
+                for c in answer.citations
+                if (c.doc_id, c.section) not in known
+            ]
+            cited = "ok" if not dead else f"FAILED, no such section: {dead}"
+            body = answer.answer
+            citations = (
+                ", ".join(f"{c.doc_id}#{c.section}" for c in answer.citations) or "none"
+            )
+
         print(f"{label}: {question}")
         print(f"  called: {verdict}")
+        print(f"  cited: {cited}")
+        print(f"  status: {answer.answer_status if answer else '-'}")
         print(f"  stop_reason: {result.stop_reason}")
         print(f"  rounds: {len(result.rounds)}  tool calls: {called or 'none'}")
-        print(f"  answer: {result.text}")
+        print(f"  citations: {citations}")
+        print(f"  answer: {body}")
         for index, round_ in enumerate(result.rounds):
             print(f"  usage[{index}]: {round_.usage}")
         print()
