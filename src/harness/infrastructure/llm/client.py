@@ -1,7 +1,7 @@
 import logging
 from collections import Counter
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from openai import (
     APIConnectionError,
@@ -25,6 +25,7 @@ from harness.core.interfaces import (
     LlmError,
     LlmResponseFormatError,
     LlmStructuredCompletion,
+    LlmStructuredToolCompletion,
     LlmToolCompletion,
     LlmToolError,
     LlmToolStopReason,
@@ -265,6 +266,64 @@ class OpenAiLlmClient:
         tools: Sequence[ToolSpec[Any]],
         max_rounds: int = 5,
     ) -> LlmToolCompletion:
+        result = self._run_tool_loop(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            config=config,
+            tools=tools,
+            max_rounds=max_rounds,
+            schema=None,
+        )
+        # result.parsed is always None on this path, so it is dropped rather
+        # than handed to callers who never asked for a schema.
+        return LlmToolCompletion(result.text, result.rounds, result.stop_reason)
+
+    def complete_with_tools_structured[T: BaseModel](
+        self,
+        system_prompt: str,
+        user_message: str,
+        config: LlmConfig,
+        tools: Sequence[ToolSpec[Any]],
+        schema: type[T],
+        max_rounds: int = 5,
+    ) -> LlmStructuredToolCompletion[T]:
+        result = self._run_tool_loop(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            config=config,
+            tools=tools,
+            max_rounds=max_rounds,
+            schema=schema,
+        )
+        # The loop is not generic, so it can only promise BaseModel. What it put
+        # in `parsed` came out of responses.parse(text_format=schema) and is
+        # therefore a T; the cast narrows the type parameter and nothing else,
+        # on the same object.
+        return cast(LlmStructuredToolCompletion[T], result)
+
+    def _run_tool_loop(
+        self,
+        system_prompt: str,
+        user_message: str,
+        config: LlmConfig,
+        tools: Sequence[ToolSpec[Any]],
+        max_rounds: int,
+        schema: type[BaseModel] | None,
+    ) -> LlmStructuredToolCompletion[BaseModel]:
+        """Drive the tool loop, with or without a schema on the final answer.
+
+        One loop for both public methods. The two differ in exactly two places,
+        the request call and how the final round is read, and everything else
+        that matters here is easy to get subtly wrong twice: feeding the calls
+        back so the next request is not rejected, stopping before a round whose
+        output nobody would read, and getting the cost line out before an
+        exception leaves the method.
+
+        Not generic on purpose. A `type[T] | None` parameter cannot be solved
+        when the caller passes None, so the plain path would need a type
+        argument it has no use for. The structured path narrows with a cast
+        instead, which is one documented line in one place.
+        """
         if max_rounds < 1:
             raise ValueError(f"max_rounds must be at least 1, got {max_rounds}.")
 
@@ -283,19 +342,51 @@ class OpenAiLlmClient:
         # does, or a failed run is the one run whose price nobody can see.
         try:
             for round_index in range(max_rounds):
+                parsed_output: BaseModel | None = None
                 try:
-                    response = self._client.responses.create(
-                        model=config.model_name,
-                        instructions=system_prompt,
-                        input=items,
-                        tools=tool_params,
-                        temperature=config.temperature
-                        if config.temperature is not None
-                        else omit,
-                        max_output_tokens=config.max_output_tokens
-                        if config.max_output_tokens is not None
-                        else omit,
-                    )
+                    if schema is None:
+                        response = self._client.responses.create(
+                            model=config.model_name,
+                            instructions=system_prompt,
+                            input=items,
+                            tools=tool_params,
+                            temperature=config.temperature
+                            if config.temperature is not None
+                            else omit,
+                            max_output_tokens=config.max_output_tokens
+                            if config.max_output_tokens is not None
+                            else omit,
+                        )
+                    else:
+                        # text_format and tools travel in the same request. The
+                        # schema applies to every round, but only a round that
+                        # calls no tool produces output_parsed: while the model
+                        # is still calling tools its output items are the calls,
+                        # not an answer.
+                        parsed_response = self._client.responses.parse(
+                            model=config.model_name,
+                            instructions=system_prompt,
+                            input=items,
+                            tools=tool_params,
+                            text_format=schema,
+                            temperature=config.temperature
+                            if config.temperature is not None
+                            else omit,
+                            max_output_tokens=config.max_output_tokens
+                            if config.max_output_tokens is not None
+                            else omit,
+                        )
+                        response = parsed_response
+                        parsed_output = parsed_response.output_parsed
+                except ValidationError as exc:
+                    # Only reachable on the parse() path: the SDK validates
+                    # inside the call, so the response object and its usage are
+                    # lost. Same known gap as complete_structured, and the round
+                    # is still billed.
+                    raise LlmResponseFormatError(
+                        f"Response from {config.model_name} did not satisfy "
+                        f"{schema.__name__ if schema is not None else '?'}."
+                    ) from exc
                 except (
                     AuthenticationError,
                     PermissionDeniedError,
@@ -333,22 +424,36 @@ class OpenAiLlmClient:
                         },
                     )
                     _log_tool_run(config.model_name, rounds, "incomplete_details")
-                    return LlmToolCompletion(
-                        response.output_text, tuple(rounds), "incomplete_details"
+                    return LlmStructuredToolCompletion(
+                        response.output_text, None, tuple(rounds), "incomplete_details"
                     )
 
                 if not calls:
                     text = response.output_text
-                    if not text.strip():
+                    if schema is not None:
+                        if parsed_output is None:
+                            # incomplete_details was handled above, so the round
+                            # ran to the end and still produced no object. What
+                            # is left is a refusal or an empty output, and both
+                            # are a broken answer rather than a broken provider.
+                            raise LlmResponseFormatError(
+                                f"Response from {config.model_name} could not be "
+                                f"parsed into {schema.__name__}."
+                            )
+                    elif not text.strip():
                         # Nothing stopped the model early and it asked for no tool,
-                        # so an empty answer has no explanation left.
+                        # so an empty answer has no explanation left. Under a schema
+                        # this check is moot: output_text then holds the JSON, which
+                        # is non-empty whenever parsed_output is set.
                         raise LlmUnavailableError(
                             f"The response for the {config.model_name} model "
                             f"contains no content."
                         )
 
                     _log_tool_run(config.model_name, rounds, "completed")
-                    return LlmToolCompletion(text, tuple(rounds), "completed")
+                    return LlmStructuredToolCompletion(
+                        text, parsed_output, tuple(rounds), "completed"
+                    )
 
                 if round_index == max_rounds - 1:
                     # No round left to feed the results into, so we stop before doing
@@ -395,4 +500,10 @@ class OpenAiLlmClient:
             raise
 
         _log_tool_run(config.model_name, rounds, "max_rounds")
-        return LlmToolCompletion(last_response_text, tuple(rounds), "max_rounds")
+        # No parsed answer here even under a schema: the loop ran out of rounds
+        # before the model stopped calling tools, so there was never a final
+        # answer to parse. The partial text still travels, as it does without a
+        # schema.
+        return LlmStructuredToolCompletion(
+            last_response_text, None, tuple(rounds), "max_rounds"
+        )

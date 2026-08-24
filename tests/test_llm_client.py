@@ -25,6 +25,7 @@ from harness.core.interfaces import (
     LlmCompletion,
     LlmConfigurationError,
     LlmResponseFormatError,
+    LlmStructuredToolCompletion,
     LlmToolError,
     LlmUnavailableError,
     TokenUsage,
@@ -117,6 +118,23 @@ def make_tool_spec(handler: Callable[[SectionSearchParams], str]) -> ToolSpec[An
 
 
 @dataclass
+class FakeParsedToolResponse:
+    """A tool round under a schema.
+
+    Same walkable shape as FakeToolResponse plus output_parsed, because the
+    adapter reads both from the same response object: the output items decide
+    whether another round follows, and output_parsed only ever carries
+    something on a round that called no tool.
+    """
+
+    output_text: str = ""
+    output: list[FakeFunctionCall] = field(default_factory=list[FakeFunctionCall])
+    output_parsed: FakeSchema | None = None
+    usage: FakeUsage | None = None
+    incomplete_details: FakeIncompleteDetails | None = None
+
+
+@dataclass
 class FakeResponses:
     result: FakeResponse | None = None
     parsed_result: FakeParsedResponse | None = None
@@ -125,6 +143,12 @@ class FakeResponses:
     # One entry per round, consumed in order. A tool run makes several calls,
     # so a single result cannot express what the second round returns.
     tool_results: list[FakeToolResponse] = field(default_factory=list[FakeToolResponse])
+    # Kept apart from tool_results rather than widened into a union: the two
+    # paths call different SDK methods, and a shared queue would let a test
+    # feed a create() response into a parse() run without anything noticing.
+    parsed_tool_results: list[FakeParsedToolResponse] = field(
+        default_factory=list[FakeParsedToolResponse]
+    )
 
     def create(self, **kwargs: object) -> Any:
         self.calls.append(kwargs)
@@ -135,10 +159,12 @@ class FakeResponses:
         assert self.result is not None
         return self.result
 
-    def parse(self, **kwargs: object) -> FakeParsedResponse:
+    def parse(self, **kwargs: object) -> Any:
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
+        if self.parsed_tool_results:
+            return self.parsed_tool_results.pop(0)
         assert self.parsed_result is not None
         return self.parsed_result
 
@@ -822,3 +848,152 @@ def test_complete_with_tools_logs_the_cost_of_a_run_that_failed(
     assert runs[0].rounds == 1  # type: ignore[attr-defined]
     assert runs[0].total_tokens == 33  # type: ignore[attr-defined]
     assert runs[0].cache_write_tokens == 55  # type: ignore[attr-defined]
+
+
+def _structured_client(
+    responses: FakeResponses,
+) -> Callable[..., LlmStructuredToolCompletion[FakeSchema]]:
+    """Bind the boilerplate so each structured test shows only its own setup."""
+    client = make_client(responses)
+
+    def run(
+        handler: Callable[[SectionSearchParams], str] = lambda params: "section text",
+        max_rounds: int = 5,
+    ) -> LlmStructuredToolCompletion[FakeSchema]:
+        return client.complete_with_tools_structured(
+            system_prompt="You are helpful.",
+            user_message="Say hello.",
+            config=LlmConfig(model_name="test-model"),
+            tools=[make_tool_spec(handler)],
+            schema=FakeSchema,
+            max_rounds=max_rounds,
+        )
+
+    return run
+
+
+def test_complete_with_tools_structured_runs_a_handler_and_parses_the_answer() -> None:
+    """The whole point of the method: tools and a schema in one run.
+
+    Two rounds, because a one-round run would not show that the tool result
+    travelled back in. The schema applies to both rounds, but only the second
+    one carries output_parsed, since the first produced a call and no answer.
+    """
+    responses = FakeResponses(
+        parsed_tool_results=[
+            FakeParsedToolResponse(output=[make_tool_call()]),
+            FakeParsedToolResponse(
+                output_text='{"value": "grounded"}',
+                output_parsed=FakeSchema(value="grounded"),
+            ),
+        ]
+    )
+    seen: list[str] = []
+
+    def handler(params: SectionSearchParams) -> str:
+        seen.append(params.query)
+        return "section text"
+
+    result = _structured_client(responses)(handler)
+
+    assert seen == ["x"]
+    assert result.stop_reason == "completed"
+    assert result.parsed == FakeSchema(value="grounded")
+    assert result.text == '{"value": "grounded"}'
+    assert len(result.rounds) == 2
+
+
+def test_complete_with_tools_structured_sends_the_schema_as_text_format() -> None:
+    # Without this the run would still pass its assertions while the provider
+    # was never told to produce structured output at all.
+    responses = FakeResponses(
+        parsed_tool_results=[
+            FakeParsedToolResponse(
+                output_text='{"value": "x"}', output_parsed=FakeSchema(value="x")
+            )
+        ]
+    )
+
+    _structured_client(responses)()
+
+    assert responses.calls[0]["text_format"] is FakeSchema
+    assert responses.calls[0]["tools"]
+
+
+def test_complete_with_tools_structured_leaves_parsed_empty_on_max_rounds() -> None:
+    """The invariant: parsed is set exactly when stop_reason is "completed".
+
+    An exhausted loop never reached a final answer, so there is nothing to
+    parse. The partial text still travels, which is why this returns instead of
+    raising: raising would throw away both the text and stop_reason.
+    """
+    responses = FakeResponses(
+        parsed_tool_results=[
+            FakeParsedToolResponse(output_text="partial", output=[make_tool_call()])
+        ]
+    )
+
+    result = _structured_client(responses)(max_rounds=1)
+
+    assert result.stop_reason == "max_rounds"
+    assert result.parsed is None
+    assert result.text == "partial"
+
+
+def test_complete_with_tools_structured_leaves_parsed_empty_when_cut_off() -> None:
+    # Same invariant from the other side. The provider stopped the round, so
+    # any object built from it would be built from a truncated payload.
+    responses = FakeResponses(
+        parsed_tool_results=[
+            FakeParsedToolResponse(
+                output_text="cut",
+                incomplete_details=FakeIncompleteDetails("max_output_tokens"),
+            )
+        ]
+    )
+
+    result = _structured_client(responses)()
+
+    assert result.stop_reason == "incomplete_details"
+    assert result.parsed is None
+    assert result.text == "cut"
+
+
+def test_complete_with_tools_structured_rejects_an_answer_it_cannot_parse() -> None:
+    """A finished round with no object is a broken answer, not a broken provider.
+
+    LlmResponseFormatError rather than LlmUnavailableError: the model answered,
+    the answer just did not satisfy the schema, most likely a refusal.
+    """
+    responses = FakeResponses(
+        parsed_tool_results=[FakeParsedToolResponse(output_text="", output_parsed=None)]
+    )
+
+    with pytest.raises(LlmResponseFormatError, match="could not be parsed"):
+        _structured_client(responses)()
+
+
+def test_complete_with_tools_structured_maps_a_validation_error() -> None:
+    # The SDK validates inside parse(), so a schema violation surfaces as a
+    # pydantic error from the call itself rather than as a bad return value.
+    responses = FakeResponses(error=make_validation_error())
+
+    with pytest.raises(LlmResponseFormatError, match="did not satisfy"):
+        _structured_client(responses)()
+
+
+def test_complete_with_tools_structured_still_rejects_a_duplicate_tool_name() -> None:
+    # Guards the extraction itself: both public methods now share one loop, so
+    # the checks that used to sit in complete_with_tools have to still fire on
+    # the structured path.
+    client = make_client(FakeResponses())
+    spec = make_tool_spec(lambda params: "text")
+
+    with pytest.raises(ValueError, match="Duplicate tool names"):
+        client.complete_with_tools_structured(
+            system_prompt="You are helpful.",
+            user_message="Say hello.",
+            config=LlmConfig(model_name="test-model"),
+            tools=[spec, spec],
+            schema=FakeSchema,
+        )

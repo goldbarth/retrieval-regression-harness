@@ -127,7 +127,49 @@ class ToolCompleter(Protocol):
         ...
 
 
-class LlmClient(TextCompleter, StructuredCompleter, ToolCompleter, Protocol):
+class StructuredToolCompleter(Protocol):
+    """Port for a tool-augmented run whose final answer is bound to a schema."""
+
+    def complete_with_tools_structured[T: BaseModel](
+        self,
+        system_prompt: str,
+        user_message: str,
+        config: LlmConfig,
+        tools: Sequence[ToolSpec[Any]],
+        schema: type[T],
+        max_rounds: int = 5,
+    ) -> LlmStructuredToolCompletion[T]:
+        """Run the model until it answers, then parse that answer into `schema`.
+
+        A role of its own rather than a `schema: type[T] | None` on
+        complete_with_tools. An optional schema would make the return type
+        depend on the value of an argument, which neither the type checker nor
+        a test double can express, and every caller of the plain method would
+        start paying for a parsed field it never asked for.
+
+        Args:
+            system_prompt: Instructions that define the model's behavior and role.
+            user_message: The input text to be processed by the model.
+            config: Configuration settings for the language model.
+            tools: The tools the model may call during the run.
+            schema: Pydantic model type the final answer is parsed into.
+            max_rounds: Upper bound on provider calls, tool rounds included.
+
+        Raises:
+            LlmError: As complete_with_tools, plus LlmResponseFormatError when
+                the model answered but the answer did not satisfy the schema.
+            ValueError: If max_rounds is below 1, or if two tools share a name.
+        """
+        ...
+
+
+class LlmClient(
+    TextCompleter,
+    StructuredCompleter,
+    ToolCompleter,
+    StructuredToolCompleter,
+    Protocol,
+):
     """The full adapter surface, for wiring only.
 
     Consumers depend on the single role they use, so a new method on one role
@@ -154,6 +196,35 @@ class ToolRound:
 @dataclass(frozen=True)
 class LlmToolCompletion:
     text: str
+    rounds: tuple[ToolRound, ...]
+    stop_reason: LlmToolStopReason
+
+
+@dataclass(frozen=True)
+class LlmStructuredToolCompletion[T: BaseModel]:
+    """A tool-augmented run whose final answer was meant to be schema-bound.
+
+    Carries `text` as well as `parsed`, so it is a superset of
+    LlmToolCompletion rather than a replacement. An exhausted or truncated run
+    has no schema-compliant answer but still produced text, and raising instead
+    would throw that text away together with stop_reason, which exists
+    precisely so a caller can tell "completed" from "max_rounds".
+    """
+
+    text: str
+    """Raw output of the last round, always set. Under a schema this is the
+    JSON the model emitted, so on "completed" it is the serialized form of
+    `parsed`; on "max_rounds" it is whatever partial text the model had
+    produced by then."""
+
+    parsed: T | None
+    """Not None exactly when stop_reason is "completed".
+
+    An invariant, not a type guarantee: the adapter establishes it and
+    test_llm_client pins it. A caller that needs the parsed answer therefore
+    checks this field rather than stop_reason, because only this check narrows
+    the type."""
+
     rounds: tuple[ToolRound, ...]
     stop_reason: LlmToolStopReason
 

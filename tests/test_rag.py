@@ -4,18 +4,21 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from harness.api.dependencies import get_llm_client, get_llm_config, get_tools
 from harness.core.config import LlmConfig
+from harness.core.gold import ExpectedSource
 from harness.core.interfaces import (
     LLM_TOOL_STOP_REASONS,
-    LlmToolCompletion,
+    LlmStructuredToolCompletion,
     LlmToolStopReason,
     SectionHit,
-    ToolCompleter,
+    StructuredToolCompleter,
     ToolRound,
     ToolSpec,
 )
+from harness.core.rag import RagAnswer
 from harness.core.tools import build_section_search_tool
 from harness.main import app
 
@@ -26,40 +29,48 @@ class RecordedToolCall:
     user_message: str
     config: LlmConfig
     tools: tuple[str, ...]
+    schema: type[BaseModel]
 
 
-class RecordingToolCompleter:
-    """Only implements ToolCompleter. That it suffices is the point of the role."""
+class RecordingStructuredToolCompleter:
+    """Only implements StructuredToolCompleter. That it suffices is the point
+    of the role: the endpoint asks for one method, so a double that provides
+    one method is a complete stand-in."""
 
-    def __init__(self, completion: LlmToolCompletion) -> None:
+    def __init__(self, completion: LlmStructuredToolCompletion[RagAnswer]) -> None:
         self.completion = completion
         self.calls: list[RecordedToolCall] = []
 
-    def complete_with_tools(
+    def complete_with_tools_structured[T: BaseModel](
         self,
         system_prompt: str,
         user_message: str,
         config: LlmConfig,
         tools: Sequence[ToolSpec[Any]],
+        schema: type[T],
         max_rounds: int = 5,
-    ) -> LlmToolCompletion:
+    ) -> LlmStructuredToolCompletion[T]:
         self.calls.append(
             RecordedToolCall(
                 system_prompt=system_prompt,
                 user_message=user_message,
                 config=config,
                 tools=tuple(tool.name for tool in tools),
+                schema=schema,
             )
         )
-        return self.completion
+        # The double is built for RagAnswer and the endpoint only ever asks for
+        # RagAnswer, so the stored completion is the right one. The signature
+        # still has to stay generic to satisfy the protocol.
+        return self.completion  # type: ignore[return-value]
 
 
-def test_the_double_satisfies_the_tool_role() -> None:
-    # Static check, not a runtime one: if ToolCompleter grows a method, this
-    # assignment stops type-checking and the double gets fixed on purpose
-    # rather than by a failing request test.
-    completer: ToolCompleter = RecordingToolCompleter(
-        LlmToolCompletion("", (), "completed")
+def test_the_double_satisfies_the_structured_tool_role() -> None:
+    # Static check, not a runtime one: if StructuredToolCompleter grows a
+    # method, this assignment stops type-checking and the double gets fixed on
+    # purpose rather than by a failing request test.
+    completer: StructuredToolCompleter = RecordingStructuredToolCompleter(
+        LlmStructuredToolCompletion("", None, (), "completed")
     )
 
     assert completer is not None
@@ -70,7 +81,7 @@ class FakeSearch:
         return [SectionHit("doc", "section", "body")]
 
 
-RagClientFactory = Callable[[RecordingToolCompleter, LlmConfig], TestClient]
+RagClientFactory = Callable[[RecordingStructuredToolCompleter, LlmConfig], TestClient]
 
 
 @pytest.fixture
@@ -85,7 +96,9 @@ def rag_client() -> Iterator[RagClientFactory]:
     ValidationError that has nothing to do with the status code under test.
     """
 
-    def build(llm: RecordingToolCompleter, llm_config: LlmConfig) -> TestClient:
+    def build(
+        llm: RecordingStructuredToolCompleter, llm_config: LlmConfig
+    ) -> TestClient:
         tools: list[ToolSpec[Any]] = [build_section_search_tool(FakeSearch())]
         app.dependency_overrides[get_llm_client] = lambda: llm
         app.dependency_overrides[get_llm_config] = lambda: llm_config
@@ -98,10 +111,27 @@ def rag_client() -> Iterator[RagClientFactory]:
         app.dependency_overrides.clear()
 
 
+def _answered(text: str, *sections: tuple[str, str]) -> RagAnswer:
+    return RagAnswer(
+        answer_status="answered",
+        answer=text,
+        citations=[ExpectedSource(doc_id=d, section=s) for d, s in sections],
+    )
+
+
 def _completer(
     text: str, stop_reason: LlmToolStopReason = "completed"
-) -> RecordingToolCompleter:
-    return RecordingToolCompleter(LlmToolCompletion(text, (), stop_reason))
+) -> RecordingStructuredToolCompleter:
+    """Build a double that honors the port's invariant.
+
+    parsed is set exactly when stop_reason is "completed". Handing back a
+    parsed answer together with "max_rounds" would let a test pass on a
+    combination the adapter never produces.
+    """
+    parsed = _answered(text, ("doc", "section")) if stop_reason == "completed" else None
+    return RecordingStructuredToolCompleter(
+        LlmStructuredToolCompletion(text, parsed, (), stop_reason)
+    )
 
 
 def test_rag_analyze_returns_the_model_answer(rag_client: RagClientFactory) -> None:
@@ -115,16 +145,84 @@ def test_rag_analyze_returns_the_model_answer(rag_client: RagClientFactory) -> N
         "result": "tool backed answer",
         "num_chars": len("tool backed answer"),
         "stop_reason": "completed",
+        "citations": [{"doc_id": "doc", "section": "section"}],
+        "answer_status": "answered",
     }
 
 
-def test_rag_analyze_passes_request_config_and_tools_to_the_llm(
+def test_rag_analyze_returns_the_citations_as_a_field(
+    rag_client: RagClientFactory,
+) -> None:
+    """The point of commit 4. The smoke run on 2026-08-19 produced three
+    citation formats across four answers, none of them parsable; the field
+    replaces that convention, so it has to arrive structured and unchanged."""
+    llm = RecordingStructuredToolCompleter(
+        LlmStructuredToolCompletion(
+            "grounded",
+            _answered(
+                "grounded",
+                ("tutorial/response-model", "response-model-priority"),
+                (
+                    "advanced/custom-response",
+                    "document-in-openapi-and-override-response",
+                ),
+            ),
+            (),
+            "completed",
+        )
+    )
+    client = rag_client(llm, LlmConfig(model_name="rag-test-model"))
+
+    response = client.post("/rag/analyze", json={"text": "who?"})
+
+    assert response.status_code == 200
+    assert response.json()["citations"] == [
+        {"doc_id": "tutorial/response-model", "section": "response-model-priority"},
+        {
+            "doc_id": "advanced/custom-response",
+            "section": "document-in-openapi-and-override-response",
+        },
+    ]
+
+
+def test_rag_analyze_reports_an_ungrounded_answer_as_such(
+    rag_client: RagClientFactory,
+) -> None:
+    """An empty citation list alone is ambiguous, so answer_status carries the
+    difference: retrieval found nothing usable, and the model said so instead
+    of inventing a source."""
+    llm = RecordingStructuredToolCompleter(
+        LlmStructuredToolCompletion(
+            "nothing relevant",
+            RagAnswer(
+                answer_status="no_relevant_sections",
+                answer="nothing relevant",
+                citations=[],
+            ),
+            (),
+            "completed",
+        )
+    )
+    client = rag_client(llm, LlmConfig(model_name="rag-test-model"))
+
+    response = client.post("/rag/analyze", json={"text": "who?"})
+
+    assert response.status_code == 200
+    assert response.json()["answer_status"] == "no_relevant_sections"
+    assert response.json()["citations"] == []
+    assert response.json()["stop_reason"] == "completed"
+
+
+def test_rag_analyze_passes_request_config_tools_and_schema_to_the_llm(
     rag_client: RagClientFactory,
 ) -> None:
     llm_config = LlmConfig(model_name="rag-test-model", temperature=0.3)
-    llm = RecordingToolCompleter(
-        LlmToolCompletion(
-            "answer", (ToolRound(("search_sections",), None),), "completed"
+    llm = RecordingStructuredToolCompleter(
+        LlmStructuredToolCompletion(
+            "answer",
+            _answered("answer", ("doc", "section")),
+            (ToolRound(("search_sections",), None),),
+            "completed",
         )
     )
     client = rag_client(llm, llm_config)
@@ -138,6 +236,7 @@ def test_rag_analyze_passes_request_config_and_tools_to_the_llm(
     assert call.user_message == "who?"
     assert call.config == llm_config
     assert call.tools == ("search_sections",)
+    assert call.schema is RagAnswer
 
 
 def test_rag_analyze_rejects_whitespace_only_text_returns_422(
@@ -158,6 +257,9 @@ def test_rag_analyze_returns_the_partial_text_when_the_run_hit_max_rounds(
 ) -> None:
     # max_rounds is not an error: the caller gets what the model produced, and
     # stop_reason is the only thing that says the answer is not a full one.
+    # There is no parsed answer to take citations from, so the list is empty
+    # and answer_status stays null, which is what separates this case from a
+    # deliberate "no_relevant_sections".
     llm = _completer("partial", stop_reason="max_rounds")
     client = rag_client(llm, LlmConfig(model_name="rag-test-model"))
 
@@ -166,6 +268,8 @@ def test_rag_analyze_returns_the_partial_text_when_the_run_hit_max_rounds(
     assert response.status_code == 200
     assert response.json()["result"] == "partial"
     assert response.json()["stop_reason"] == "max_rounds"
+    assert response.json()["citations"] == []
+    assert response.json()["answer_status"] is None
 
 
 @pytest.mark.parametrize("stop_reason", LLM_TOOL_STOP_REASONS)
