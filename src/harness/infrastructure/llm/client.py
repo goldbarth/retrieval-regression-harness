@@ -1,6 +1,7 @@
 import logging
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, Literal, cast
 
 from openai import (
@@ -15,6 +16,7 @@ from openai import (
     omit,
 )
 from openai.types.responses import FunctionToolParam
+from openai.types.responses import Response as OpenAiResponse
 from openai.types.responses.response_usage import ResponseUsage as OpenAiResponseUsage
 from pydantic import BaseModel, ValidationError
 
@@ -24,8 +26,11 @@ from harness.core.interfaces import (
     LlmConfigurationError,
     LlmError,
     LlmResponseFormatError,
+    LlmStreamEnd,
+    LlmStreamEvent,
     LlmStructuredCompletion,
     LlmStructuredToolCompletion,
+    LlmTextDelta,
     LlmToolCompletion,
     LlmToolError,
     LlmToolStopReason,
@@ -121,6 +126,97 @@ def _to_tool_param(spec: ToolSpec[Any]) -> FunctionToolParam:
         # tell the model the tool has an (empty) description.
         param["description"] = description
     return param
+
+
+@contextmanager
+def _mapped_llm_errors(model_name: str) -> Generator[None]:
+    try:
+        yield
+    except (
+        AuthenticationError,
+        PermissionDeniedError,
+        BadRequestError,
+        NotFoundError,
+    ) as exc:
+        raise LlmConfigurationError(
+            f"Request for model {model_name} was rejected."
+        ) from exc
+    except (RateLimitError, APIConnectionError) as exc:
+        raise LlmUnavailableError(
+            f"Model {model_name} is currently unavailable."
+        ) from exc
+    except OpenAIError as exc:
+        raise LlmUnavailableError(f"Model {model_name} did not answer.") from exc
+
+
+def _to_stream_end(response: OpenAiResponse, model_name: str) -> LlmStreamEnd:
+    """Turn the provider's terminal event into the port's last event.
+
+    Usage arrives only in the terminal event of a stream; deltas carry none.
+    incomplete_details is None on "response.completed" and set on
+    "response.incomplete", so one function covers both.
+
+    Python detail: the SDK types incomplete_details.reason as
+    Literal["max_output_tokens", "content_filter"] | None, which is exactly
+    LlmIncompleteReason | None, so the value passes through without a cast.
+    """
+    usage = _to_token_usage(response.usage, model_name)
+    details = response.incomplete_details
+    reason = details.reason if details else None
+    return LlmStreamEnd(usage, reason)
+
+
+LlmStreamOutcome = Literal["completed", "failed", "abandoned"]
+"""How a stream ended, for the log only.
+
+The port has no stop reason for streams, since a caller reads incomplete_reason
+off the end event. The log still has to tell a run that returned from one that
+raised, because both were billed and only the second one is worth finding.
+An incomplete run counts as "completed": it reached a terminal event, and the
+incomplete_reason field on the same line says which one.
+
+"abandoned" is a caller that stopped reading: an SSE client that hung up, or a
+test that closed the generator. The provider billed what it had already sent,
+and no terminal event ever arrives, so this line has no usage on it either.
+"""
+
+
+def _log_stream_run(
+    model_name: str,
+    end: LlmStreamEnd | None,
+    outcome: LlmStreamOutcome,
+    deltas: int,
+) -> None:
+    """Log one cost line per finished stream, including one that raised.
+
+    Same reason as _log_tool_run: without it the streaming path is the one path
+    whose price never reaches the log, and a run that raises spent the same
+    tokens as one that returned. Fields as in the "LLM call completed" call
+    inside complete(), plus outcome, incomplete_reason and deltas.
+
+    `end` is None for a run that never reached a terminal event, whether it
+    raised or the caller walked away. There is no usage to report then, and the
+    line is the only thing left that says the run happened at all. `deltas` is
+    what those runs still have to show for themselves, so it goes on every
+    outcome rather than only on the ones that would otherwise be empty.
+    """
+    extra: dict[str, object] = {
+        "model_name": model_name,
+        "outcome": outcome,
+        "incomplete_reason": end.incomplete_reason if end is not None else None,
+        "deltas": deltas,
+    }
+    usage = end.usage if end is not None else None
+    if usage is not None:
+        extra |= {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+            "cached_tokens": usage.cached_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+        }
+    logger.info("LLM stream completed", extra=extra)
 
 
 class OpenAiLlmClient:
@@ -507,3 +603,104 @@ class OpenAiLlmClient:
         return LlmStructuredToolCompletion(
             last_response_text, None, tuple(rounds), "max_rounds"
         )
+
+    def stream(
+        self, system_prompt: str, user_message: str, config: LlmConfig
+    ) -> Iterator[LlmStreamEvent]:
+        """Adapter for responses.create(stream=True).
+
+        Python detail: the `yield`s below make this a generator function. Calling
+        it runs nothing; the body starts on the first next(). That is why the
+        request failures below land on the caller's first next() rather than on
+        the call to stream(), and why a caller who never iterates leaks no
+        connection.
+
+        Raises:
+            LlmConfigurationError: The provider rejected the request.
+            LlmUnavailableError: The provider could not be reached, sent an
+                error event, or ended the stream without a terminal event.
+        """
+        with _mapped_llm_errors(config.model_name):
+            stream_obj = self._client.responses.create(
+                model=config.model_name,
+                instructions=system_prompt,
+                input=user_message,
+                temperature=config.temperature
+                if config.temperature is not None
+                else omit,
+                max_output_tokens=config.max_output_tokens
+                if config.max_output_tokens is not None
+                else omit,
+                stream=True,
+            )
+
+        deltas = 0
+        end: LlmStreamEnd | None = None
+
+        # Every raise below leaves a run the provider already billed, so the
+        # cost line has to go out before the exception does. Same reason as in
+        # _run_tool_loop, and the same "failed" outcome to find them by.
+        try:
+            with stream_obj, _mapped_llm_errors(config.model_name):
+                for event in stream_obj:
+                    # An elif chain, not separate ifs: event.type is a Literal
+                    # and the checkers only narrow along one branch. No else:
+                    # the API ships new event types continuously, and a run has
+                    # to survive the ones this adapter has no use for.
+                    if event.type == "response.output_text.delta":
+                        deltas += 1
+                        yield LlmTextDelta(event.delta)
+                    elif event.type == "response.completed":
+                        end = _to_stream_end(event.response, config.model_name)
+                        break
+                    elif event.type == "response.incomplete":
+                        end = _to_stream_end(event.response, config.model_name)
+                        logger.warning(
+                            "LLM stream is incomplete",
+                            extra={
+                                "model_name": config.model_name,
+                                "incomplete_reason": end.incomplete_reason,
+                            },
+                        )
+                        break
+                    elif event.type == "response.failed":
+                        # event.response.error is None-able even on a failure,
+                        # so the fallback wording still has to exist.
+                        error = event.response.error
+                        detail = f" ({error.code}: {error.message})" if error else ""
+                        raise LlmUnavailableError(
+                            f"Model {config.model_name} reported a failed "
+                            f"response{detail}."
+                        )
+                    elif event.type == "error":
+                        raise LlmUnavailableError(
+                            f"Model {config.model_name} sent an error event "
+                            f"({event.code}: {event.message})."
+                        )
+
+            if end is None:
+                raise LlmUnavailableError(
+                    f"Model {config.model_name} ended the stream without a "
+                    f"terminal event."
+                )
+
+            if deltas == 0 and end.incomplete_reason is None:
+                raise LlmUnavailableError(
+                    f"The response for the {config.model_name} model contains "
+                    f"no content."
+                )
+        except LlmError:
+            _log_stream_run(config.model_name, end, "failed", deltas)
+            raise
+        except GeneratorExit:
+            # Not an error: the caller stopped reading, and GeneratorExit is how
+            # that arrives inside a generator. It is not an Exception subclass,
+            # so the except LlmError above never sees it, and re-raising is
+            # mandatory - a generator that swallows it raises RuntimeError on
+            # close(). From Commit 3 on this is the common way a run ends early:
+            # an SSE client closing the tab hangs up mid-answer.
+            _log_stream_run(config.model_name, end, "abandoned", deltas)
+            raise
+
+        _log_stream_run(config.model_name, end, "completed", deltas)
+        yield end

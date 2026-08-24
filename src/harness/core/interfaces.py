@@ -222,6 +222,7 @@ class StructuredToolCompleter(Protocol):
 class LlmClient(
     TextCompleter,
     StructuredCompleter,
+    TextStreamer,
     ToolCompleter,
     StructuredToolCompleter,
     Protocol,
