@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast, get_args
 
@@ -70,6 +70,38 @@ class LlmCompletion:
     """Set when the provider stopped early. The text is then a partial answer."""
 
 
+@dataclass(frozen=True)
+class LlmTextDelta:
+    """One incremental chunk of the answer. Many per run, order matters."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class LlmStreamEnd:
+    """The last event of a run that reached the provider's final event.
+
+    Carries what a delta cannot: usage arrives only in the provider's terminal
+    event, and incomplete_reason is the streaming twin of the field on
+    LlmCompletion. Both are None-able for the same reasons they are there.
+    """
+
+    usage: TokenUsage | None
+    incomplete_reason: LlmIncompleteReason | None
+    """No default: the adapter has to say in every return path whether the run
+    ran out or was cut short. A default would let one path stay silent, and
+    silence would read as "completed"."""
+
+
+LlmStreamEvent = LlmTextDelta | LlmStreamEnd
+"""Discriminated by class, not by a tag field.
+
+`isinstance(event, LlmTextDelta)` narrows for mypy and pyright; a
+`kind: Literal["delta", "end"]` field would need a shared base class before it
+narrows anything, and would then be a second source of truth next to the type.
+"""
+
+
 class TextCompleter(Protocol):
     """Port for plain text completion. Implemented by adapters in infrastructure."""
 
@@ -77,6 +109,30 @@ class TextCompleter(Protocol):
         self, system_prompt: str, user_message: str, config: LlmConfig
     ) -> LlmCompletion:
         """Return the model's answer or raise LlmError."""
+        ...
+
+
+class TextStreamer(Protocol):
+    """Port for token-by-token completion."""
+
+    def stream(
+        self, system_prompt: str, user_message: str, config: LlmConfig
+    ) -> Iterator[LlmStreamEvent]:
+        """Yield deltas as they arrive, then exactly one LlmStreamEnd.
+
+        Two guarantees the type cannot state, so they live here and Commit 2
+        has to establish them:
+
+        - LlmStreamEnd is last and appears at most once. A caller may therefore
+          stop reading when it sees one.
+        - LlmError is raised before the first yield, or as the reason a started
+          run ends early. A generator body does not run until the first
+          next(), so a caller that wants transport failures as a 502 has to
+          pull one event before it commits to a response.
+
+        Raises:
+            LlmError: On transport failure or a provider error event.
+        """
         ...
 
 
