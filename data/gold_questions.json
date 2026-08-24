@@ -11,21 +11,24 @@
         }
       ],
       "hardness": "term_collision",
-      "note": "The term response_model occurs across response-model, response-status-code and advanced/additional-responses. Only one short section answers the priority question."
+      "note": "The term response_model occurs in 11 sections of tutorial/response-model itself and across six further docs: advanced/additional-responses, advanced/custom-response, advanced/response-change-status-code, advanced/response-cookies, advanced/response-directly and advanced/response-headers. In those it names the filtering mechanism rather than the precedence rule. Only this short section answers which of the two wins."
     },
     {
       "id": "parameterized-dependency",
-      "question": "How do I build a dependency whose behaviour is configured per path operation, for example a fixed string it compares against?",
-      "expected_answer": "Use a class with a __call__ method and declare the configuration as parameters of __init__. Create an instance with the values you want and pass that instance to Depends, so each path operation can depend on a differently parameterized instance.",
+      "question": "I have a callable class as a dependency. Where do the configuration values go, and does FastAPI call that method itself?",
+      "expected_answer": "Declare them as parameters of __init__ and store them on the instance. FastAPI won't ever touch or care about __init__, you use it directly in your own code.",
       "expected_sources": [
-        { "doc_id": "advanced/advanced-dependencies", "section": "parameterize-the-instance" }
+        {
+          "doc_id": "advanced/advanced-dependencies",
+          "section": "parameterize-the-instance"
+        }
       ],
       "hardness": "near_duplicate",
-      "note": "tutorial/dependencies/classes-as-dependencies covers classes as dependencies in almost the same words, but instantiates the class per request instead of parameterizing one instance."
+      "note": "Four sections of this doc carry the same code block, so the prose is the only signal: a-callable-instance explains __call__, create-an-instance builds one, use-the-instance-as-a-dependency passes it to Depends. Only this section states that FastAPI never touches __init__."
     },
     {
       "id": "custom-response-documentation",
-      "question": "If I return a Response directly in FastAPI, how can I still document its media type in OpenAPI using response_class?",
+      "question": "Why is a Response I return directly not documented automatically, and how do I still get its media type into OpenAPI with response_class?",
       "expected_answer": "Returning a Response directly means FastAPI sends it as-is and does not automatically validate, serialize, or document its data. To still document the media type with response_class, declare response_class in the path operation decorator and return your Response object directly. FastAPI uses response_class for OpenAPI documentation, while the returned Response is the one actually sent.",
       "expected_sources": [
         {
@@ -38,7 +41,145 @@
         }
       ],
       "hardness": "multi_section",
-      "note": "The first section states the negative rule: a directly returned Response is not automatically validated, serialized, or documented. The second section gives the response_class-specific workaround: declare response_class for OpenAPI documentation while returning a Response directly at runtime. The question names response_class to exclude the alternative additional-responses mechanism."
+      "note": "The first section carries the why: a directly returned Response is not automatically validated, serialized, or documented. The second carries the how, the response_class-specific workaround. The question names response_class to exclude the alternative additional-responses mechanism."
+    },
+    {
+      "id": "cookie-on-returned-response",
+      "question": "I return a JSONResponse directly from my path operation and want to set a cookie on it. How do I do that?",
+      "expected_answer": "Create the response object first, then call set_cookie(key=..., value=...) on that instance, and return the instance. Keep in mind that returning a response directly means FastAPI returns it as-is, so the data has to be of the correct type and must not contain anything that should have been filtered by a response_model.",
+      "expected_sources": [
+        {
+          "doc_id": "advanced/response-cookies",
+          "section": "return-a-response-directly"
+        }
+      ],
+      "hardness": "near_duplicate",
+      "note": "The anchor return-a-response-directly exists in four docs. advanced/response-headers is the closest neighbour and shows the same construction, but passes headers as a constructor parameter instead of calling a method on the instance. advanced/response-directly and tutorial/response-model carry the same anchor for the general case."
+    },
+    {
+      "id": "dependencies-for-whole-app",
+      "question": "How do I add dependencies that apply to every path operation in the whole application, not just to one router or decorator?",
+      "expected_answer": "Pass them to the FastAPI application itself: FastAPI(dependencies=[Depends(verify_token), Depends(verify_key)]). Everything that applies to dependencies in path operation decorators still applies here, only to all path operations in the app.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/dependencies/global-dependencies",
+          "section": "global-dependencies"
+        }
+      ],
+      "hardness": "near_duplicate",
+      "note": "tutorial/dependencies/dependencies-in-path-operation-decorators carries the identical anchor global-dependencies, but is a 142-char forward pointer that announces the topic without answering it. A hit on that section is plausible for retrieval and wrong."
+    },
+    {
+      "id": "union-return-annotation-fails",
+      "question": "Annotating a path operation with a return type of Response | dict makes FastAPI fail at startup. Why does it fail, and how do I keep the annotation?",
+      "expected_answer": "FastAPI tries to build a Pydantic response model from the return type annotation. A union of Response and dict is neither a valid Pydantic type nor a single Response class or subclass, so that generation fails. Set response_model=None in the path operation decorator to skip the response model generation; the annotation stays in place for editors and type checkers like mypy.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/response-model",
+          "section": "invalid-return-type-annotations"
+        },
+        {
+          "doc_id": "tutorial/response-model",
+          "section": "disable-response-model"
+        }
+      ],
+      "hardness": "multi_section",
+      "note": "The first section states the cause, the second the remedy; neither carries both. The sibling section return-a-response-directly in the same doc handles a plain Response annotation, which works automatically and is the wrong answer here."
+    },
+    {
+      "id": "status-code-set-twice",
+      "question": "I declare a Response parameter in a dependency and set the status code there, and I set it again in the path operation function. Which of the two ends up in the final response?",
+      "expected_answer": "The last one to be set wins. The Response parameter can be declared in dependencies as well as in the path operation function; FastAPI extracts the status code from that temporary response object and puts it in the final response containing the returned value, filtered by any response_model.",
+      "expected_sources": [
+        {
+          "doc_id": "advanced/response-change-status-code",
+          "section": "use-a-response-parameter"
+        }
+      ],
+      "hardness": "near_duplicate",
+      "note": "The anchor use-a-response-parameter exists in three docs with near-identical wording. advanced/response-cookies and advanced/response-headers both state that the Response parameter can be declared in dependencies, but only advanced/response-change-status-code carries the precedence rule."
+    },
+    {
+      "id": "custom-header-without-direct-response",
+      "question": "How do I add a custom response header from a path operation that returns a plain dict, without returning a Response object?",
+      "expected_answer": "Declare a parameter of type Response and assign to its headers mapping, for example response.headers[\"X-Cat-Dog\"] = \"alone in the world\", then return your dict as usual. FastAPI extracts the headers from that temporary response object and applies them to the final response, with any response_model still filtering the returned value.",
+      "expected_sources": [
+        {
+          "doc_id": "advanced/response-headers",
+          "section": "use-a-response-parameter"
+        }
+      ],
+      "hardness": "near_duplicate",
+      "note": "The neighbouring advanced/response-cookies section is near-identical in wording but uses the set_cookie method, not item assignment. The distinguishing content is the access form, not the surrounding prose."
+    },
+    {
+      "id": "asynccontextmanager-on-yield-dependency",
+      "question": "Should I decorate my dependency function with @contextlib.asynccontextmanager so that FastAPI handles its exit code correctly?",
+      "expected_answer": "No. FastAPI creates the context manager internally for dependencies with yield, so you do not have to use those decorators, and you shouldn't. You can still use with or async with statements inside the dependency function if you want to consume an existing context manager there.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/dependencies/dependencies-with-yield",
+          "section": "using-context-managers-in-dependencies-with-yield"
+        }
+      ],
+      "hardness": "term_collision",
+      "note": "Five sections in this doc use the term: dependencies-with-yield, sub-dependencies-with-yield, context-managers, what-are-context-managers and this one. what-are-context-managers defines the Python construct and states that FastAPI creates one internally; sub-dependencies-with-yield mentions them in a technical note on exit order. Only the cited section carries the instruction not to apply the decorators yourself."
+    },
+    {
+      "id": "file-and-form-together",
+      "question": "How do I receive an uploaded file and a plain form field in the same path operation, and can I mix bytes and UploadFile for the files?",
+      "expected_answer": "Declare File and Form parameters on the same function, the same way you would for Body or Query, for example file: Annotated[bytes, File()], fileb: Annotated[UploadFile, File()] and token: Annotated[str, Form()]. The files and form fields are uploaded as form data, and you can declare some of the files as bytes and some as UploadFile.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/request-forms-and-files",
+          "section": "define-file-and-form-parameters"
+        }
+      ],
+      "hardness": "near_duplicate",
+      "note": "import-file-and-form in the same doc carries the identical code block and no prose at all, so the code is not a discriminator. recap answers the topic in one sentence without any mechanism, and import-file / import-form in the neighbouring docs declare only one of the two. Only this section states that files and form fields arrive as form data and that bytes and UploadFile can be mixed."
+    },
+    {
+      "id": "form-encoding-switch",
+      "question": "My form carries a file. Which media type does the request body use then, and what does declaring File have to do with it?",
+      "expected_answer": "A form that includes files is encoded as multipart/form-data instead of the application/x-www-form-urlencoded used when it doesn't include files. If you use File, FastAPI knows it has to get the files from the correct part of that body.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/request-files",
+          "section": "what-is-form-data"
+        }
+      ],
+      "hardness": "term_collision",
+      "note": "tutorial/request-forms#about-form-fields names both media types and the switch to multipart in the same wording, so the encoding alone does not decide between the two. Only this section connects File to reading the files from the correct part of the body; the neighbour defers that to the next chapter."
+    },
+    {
+      "id": "form-fields-and-json-body",
+      "question": "Can I declare Form parameters and a JSON Body field in the same path operation, and what encoding does the request body have?",
+      "expected_answer": "No. You can declare multiple Form parameters, but not Body fields expected as JSON, because the request body will be encoded as application/x-www-form-urlencoded instead of application/json. This is not a FastAPI limitation, it is part of the HTTP protocol.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/request-forms",
+          "section": "about-form-fields"
+        }
+      ],
+      "hardness": "near_duplicate",
+      "note": "The same warning exists three times. tutorial/request-files#what-is-form-data and tutorial/request-forms-and-files#define-file-and-form-parameters repeat it almost verbatim, but for File and Form together and with multipart/form-data as the resulting encoding. The named encoding is the only discriminator, which is why the question mentions no file."
+    },
+    {
+      "id": "function-scope-sub-dependency",
+      "question": "What do the two Depends scope values do differently for a dependency with yield, which one applies if I don't set it, and which scope may a sub-dependency have under each?",
+      "expected_answer": "scope=\"function\" ends the dependency after the path operation function returns but before the response is sent; scope=\"request\" ends it after the response is sent, and it is the default when a dependency with yield does not set one. A \"function\" dependency may have sub-dependencies with scope \"function\" and \"request\", while a \"request\" dependency needs all of its sub-dependencies to be \"request\" as well, because a dependency has to run its exit code before its sub-dependencies, as it might still need them there.",
+      "expected_sources": [
+        {
+          "doc_id": "tutorial/dependencies/dependencies-with-yield",
+          "section": "early-exit-and-scope"
+        },
+        {
+          "doc_id": "tutorial/dependencies/dependencies-with-yield",
+          "section": "scope-for-sub-dependencies"
+        }
+      ],
+      "hardness": "multi_section",
+      "note": "early-exit-and-scope carries what each scope value does and that \"request\" is the default for a yield dependency; scope-for-sub-dependencies carries the direction of the restriction and its justification, including the word default only in passing. Neither section answers all three parts. scope-for-sub-dependencies is a ### under the ##, and since corpus.py does not nest sections, the parent does not duplicate the child text into the denominator."
     }
   ]
 }
