@@ -3,13 +3,9 @@ import logging
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 
+from harness.api.errors import llm_error_response
 from harness.api.routers import analyze_router, health_router, rag_router
-from harness.core.interfaces import (
-    LlmConfigurationError,
-    LlmResponseFormatError,
-    LlmToolError,
-    LlmUnavailableError,
-)
+from harness.core.interfaces import LlmError
 
 logger = logging.getLogger(__name__)
 
@@ -22,41 +18,22 @@ app.include_router(rag_router)
 app.include_router(health_router)
 
 
-@app.exception_handler(LlmConfigurationError)
-def handle_llm_configuration_error(
-    request: Request, exc: LlmConfigurationError
-) -> JSONResponse:
-    logger.exception("LLM call failed because of our own configuration")
-    return JSONResponse(status_code=500, content={"detail": "internal server error"})
+@app.exception_handler(LlmError)
+def handle_llm_error(request: Request, exc: LlmError) -> JSONResponse:
+    """Answer every LlmError from the one table in api/errors.py.
 
+    Registered on the base class, not on the four subclasses: Starlette looks a
+    handler up along type(exc).__mro__, so this covers all of them, and a bare
+    LlmError as well - that one used to fall through as an uncontrolled 500.
+    A handler registered on a subclass would still win, should one ever need
+    something this cannot express.
 
-@app.exception_handler(LlmToolError)
-def handle_llm_tool_error(request: Request, exc: LlmToolError) -> JSONResponse:
-    # Our handler failed, not the provider, so this is a 500 like any other
-    # bug of ours and must not be reported as an upstream problem.
-    logger.exception("LLM tool run failed inside one of our own handlers")
-    return JSONResponse(status_code=500, content={"detail": "internal server error"})
-
-
-@app.exception_handler(LlmResponseFormatError)
-def handle_llm_response_format_error(
-    request: Request, exc: LlmResponseFormatError
-) -> JSONResponse:
-    # The provider answered, but with something we cannot use: a schema the
-    # response missed, a tool we never offered, arguments that do not parse.
-    # Same 502 as an absent answer, because the fault sits upstream either way
-    # and the caller can do nothing differently.
-    logger.exception("LLM call failed because the response could not be used")
+    logger.exception stays here rather than moving into the table. The table
+    says what to write; the handler is the place that knows there is a live
+    traceback to attach to it.
+    """
+    response = llm_error_response(exc)
+    logger.exception(response.log_message)
     return JSONResponse(
-        status_code=502, content={"detail": "upstream model answer was unusable"}
-    )
-
-
-@app.exception_handler(LlmUnavailableError)
-def handle_llm_unavailable_error(
-    request: Request, exc: LlmUnavailableError
-) -> JSONResponse:
-    logger.exception("LLM call failed because the provider did not answer")
-    return JSONResponse(
-        status_code=502, content={"detail": "upstream model unavailable"}
+        status_code=response.status_code, content={"detail": response.detail}
     )
