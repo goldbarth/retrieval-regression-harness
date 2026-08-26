@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from harness.api.dependencies import get_llm_client
+from harness.api.errors import LLM_ERROR_RESPONSES, LlmErrorResponse
 from harness.api.routers.analyze import to_sse_frames
 from harness.api.sse import SSE_MEDIA_TYPE
 from harness.core.config import LlmConfig
@@ -171,7 +172,7 @@ def test_stream_answers_502_when_the_provider_fails_before_the_first_delta(
     events = hello_there_events()
     streamer = ScriptedStreamer(
         events=events,
-        error=LlmUnavailableError("upstream model unavailable"),
+        error=LlmUnavailableError("Model gpt-5.6-luna did not answer (timeout)."),
         error_after=0,
     )
     app.dependency_overrides[get_llm_client] = lambda: streamer
@@ -180,7 +181,12 @@ def test_stream_answers_502_when_the_provider_fails_before_the_first_delta(
         assert response.status_code == 502
         body = b"".join(response.iter_bytes())
 
-    assert b"unavailable" in body
+    # Read from the table, like the endpoint does: an error before the first
+    # byte is answered by the handler in main.py, so this is the same row the
+    # error frame below would carry.
+    expected = LLM_ERROR_RESPONSES[LlmUnavailableError]
+    assert response.status_code == expected.status_code
+    assert json.loads(body) == {"detail": expected.detail}
 
 
 def test_stream_answers_200_and_an_error_frame_when_it_fails_mid_answer(
@@ -212,10 +218,10 @@ def test_stream_answers_200_and_an_error_frame_when_it_fails_mid_answer(
     assert [name for name, _ in frames] == ["delta", "error"]
     assert frames[0][1]["text"] == "hi"
 
-    # The fixed wording the handlers in main.py use, not the provider's own
-    # text: what a caller learns must not depend on whether the run failed
-    # before or after the first byte.
-    assert frames[-1][1] == {"detail": "upstream model unavailable"}
+    # The fixed wording from the table, not the provider's own text: what a
+    # caller learns must not depend on whether the run failed before or after
+    # the first byte.
+    assert frames[-1][1] == {"detail": LLM_ERROR_RESPONSES[LlmUnavailableError].detail}
 
 
 def test_stream_survives_a_consumer_that_stops_reading(client: TestClient) -> None:
@@ -324,8 +330,9 @@ def test_stream_answers_502_when_the_run_yields_no_event_at_all(
 
     response = client.post("/analyze/stream", json={"text": "hi"})
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "upstream model unavailable"}
+    expected = LLM_ERROR_RESPONSES[LlmUnavailableError]
+    assert response.status_code == expected.status_code
+    assert response.json() == {"detail": expected.detail}
 
 
 def test_stream_answers_as_an_event_stream(client: TestClient) -> None:
@@ -345,3 +352,36 @@ def test_stream_answers_as_an_event_stream(client: TestClient) -> None:
     assert response.headers["content-type"].startswith(SSE_MEDIA_TYPE)
     assert response.headers["cache-control"] == "no-cache"
     assert response.headers["x-accel-buffering"] == "no"
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected"),
+    [
+        pytest.param(error_type, response, id=error_type.__name__)
+        for error_type, response in LLM_ERROR_RESPONSES.items()
+    ],
+)
+def test_error_frame_carries_the_table_row_for_every_error(
+    client: TestClient, error_type: type[LlmError], expected: LlmErrorResponse
+) -> None:
+    """The streaming twin of test_llm_error_answers_its_table_row.
+
+    Both test sets parametrize over the same table, which is what makes the
+    wording provably single-sourced: there is no longer a copy on either side
+    that could keep asserting what the table no longer says. Only the detail is
+    compared - the status code on the row was spent when the first byte went
+    out, and this response is a 200 whatever failed afterwards.
+    """
+    streamer = ScriptedStreamer(
+        events=hello_there_events(),
+        error=error_type("provider detail we are not supposed to repeat"),
+        error_after=1,
+    )
+    app.dependency_overrides[get_llm_client] = lambda: streamer
+
+    response = client.post("/analyze/stream", json={"text": "hi"})
+
+    assert response.status_code == 200
+    frames = parse_sse_frames(response.text)
+    assert [name for name, _ in frames] == ["delta", "error"]
+    assert frames[-1][1] == {"detail": expected.detail}

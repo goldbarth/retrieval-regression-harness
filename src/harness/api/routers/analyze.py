@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from harness.api.dependencies import get_llm_client, get_llm_config
+from harness.api.errors import llm_error_response
 from harness.api.sse import (
     SSE_DELTA,
     SSE_END,
@@ -15,12 +16,9 @@ from harness.api.sse import (
 )
 from harness.core.config import LlmConfig
 from harness.core.interfaces import (
-    LlmConfigurationError,
     LlmError,
-    LlmResponseFormatError,
     LlmStreamEvent,
     LlmTextDelta,
-    LlmToolError,
     LlmUnavailableError,
     TextCompleter,
     TextStreamer,
@@ -62,33 +60,6 @@ def analyze(
     )
 
 
-# Word for word what the handlers in main.py answer with. The error frame is
-# the streaming twin of those responses, so it has to make the same decision:
-# the provider's own text goes to the log, the caller gets the fixed wording.
-# Without this the amount a caller learns about our internals would depend on
-# whether the run failed before or after the first byte.
-_ERROR_FRAME_DETAILS: tuple[tuple[type[LlmError], str], ...] = (
-    (LlmConfigurationError, "internal server error"),
-    (LlmToolError, "internal server error"),
-    (LlmResponseFormatError, "upstream model answer was unusable"),
-    (LlmUnavailableError, "upstream model unavailable"),
-)
-
-
-def _error_detail(exc: LlmError) -> str:
-    """Pick the handler wording that matches this error.
-
-    A tuple rather than a dict keyed by type: isinstance covers subclasses, and
-    a plain LlmError has no entry of its own. The fallback names ourselves
-    rather than the provider, which is what an unclassified error is.
-    """
-    for error_type, detail in _ERROR_FRAME_DETAILS:
-        if isinstance(exc, error_type):
-            return detail
-
-    return "internal server error"
-
-
 def to_sse_frames(
     first: LlmStreamEvent, events: Generator[LlmStreamEvent]
 ) -> Generator[str]:
@@ -111,8 +82,14 @@ def to_sse_frames(
         for event in events:
             yield _frame(event)
     except LlmError as exc:
+        # The same row the handler in main.py would have answered with, since
+        # the frame is that handler's streaming twin: the provider's own text
+        # goes to the log, the caller gets the fixed wording. The status code
+        # on the row is spent by now - this response has been a 200 since its
+        # first byte - so only the detail travels.
         logger.exception("LLM stream failed after the response had started")
-        yield format_sse_frame(SSE_ERROR, StreamErrorEvent(detail=_error_detail(exc)))
+        detail = llm_error_response(exc).detail
+        yield format_sse_frame(SSE_ERROR, StreamErrorEvent(detail=detail))
     finally:
         events.close()
 
