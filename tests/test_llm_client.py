@@ -1146,17 +1146,13 @@ def delta_texts(chunks: Sequence[LlmStreamEvent]) -> list[str]:
 def start_stream(client: OpenAiLlmClient) -> Generator[LlmStreamEvent]:
     """Start a run without consuming it, so a test can pull event by event.
 
-    Typed as a Generator rather than the port's Iterator: two tests need next()
-    on a half-read run and close() on a suspended one, and only a generator
-    offers close(). The cast narrows what the adapter already returns.
+    A Generator, like the port itself says: two tests need next() on a half-read
+    run and close() on a suspended one, and only a generator offers close().
     """
-    return cast(
-        Generator[LlmStreamEvent],
-        client.stream(
-            system_prompt="You are helpful.",
-            user_message="Say hello.",
-            config=LlmConfig(model_name="test-model", temperature=0.2),
-        ),
+    return client.stream(
+        system_prompt="You are helpful.",
+        user_message="Say hello.",
+        config=LlmConfig(model_name="test-model", temperature=0.2),
     )
 
 

@@ -1,6 +1,6 @@
 import logging
 from collections import Counter
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any, Literal, cast
 
@@ -606,7 +606,7 @@ class OpenAiLlmClient:
 
     def stream(
         self, system_prompt: str, user_message: str, config: LlmConfig
-    ) -> Iterator[LlmStreamEvent]:
+    ) -> Generator[LlmStreamEvent]:
         """Adapter for responses.create(stream=True).
 
         Python detail: the `yield`s below make this a generator function. Calling

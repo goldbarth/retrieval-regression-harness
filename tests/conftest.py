@@ -1,11 +1,17 @@
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
 from harness.api.dependencies import get_llm_client, get_llm_config
 from harness.core.config import LlmConfig
-from harness.core.interfaces import LlmCompletion
+from harness.core.interfaces import (
+    LlmCompletion,
+    LlmStreamEnd,
+    LlmStreamEvent,
+    LlmTextDelta,
+    TokenUsage,
+)
 from harness.main import app
 
 
@@ -14,6 +20,30 @@ class FakeLlmClient:
         self, system_prompt: str, user_message: str, config: LlmConfig
     ) -> LlmCompletion:
         return LlmCompletion(f"Analyzed: {user_message}")
+
+    def stream(
+        self, system_prompt: str, user_message: str, config: LlmConfig
+    ) -> Generator[LlmStreamEvent]:
+        """Answer the same sentence as complete(), one word per delta.
+
+        Word-wise rather than one block: the point of the endpoint test is that
+        frames arrive separately, and a single-delta fake could not tell a
+        streamed response from a buffered one.
+        """
+        yield LlmTextDelta("Analyzed:")
+        yield LlmTextDelta(f" {user_message}")
+
+        yield LlmStreamEnd(
+            TokenUsage(
+                input_tokens=9,
+                output_tokens=10,
+                total_tokens=19,
+                cached_tokens=0,
+                cache_write_tokens=0,
+                reasoning_tokens=0,
+            ),
+            None,
+        )
 
 
 @pytest.fixture

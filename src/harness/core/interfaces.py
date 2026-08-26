@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast, get_args
 
@@ -117,7 +117,7 @@ class TextStreamer(Protocol):
 
     def stream(
         self, system_prompt: str, user_message: str, config: LlmConfig
-    ) -> Iterator[LlmStreamEvent]:
+    ) -> Generator[LlmStreamEvent]:
         """Yield deltas as they arrive, then exactly one LlmStreamEnd.
 
         Two guarantees the type cannot state, so they live here and Commit 2

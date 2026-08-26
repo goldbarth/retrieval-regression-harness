@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from harness.core.config import LlmConfig
 from harness.core.interfaces import (
@@ -13,15 +13,15 @@ from harness.core.interfaces import (
 class FakeStreamer:
     def stream(
         self, system_prompt: str, user_message: str, config: LlmConfig
-    ) -> Iterator[LlmStreamEvent]:
+    ) -> Generator[LlmStreamEvent]:
         yield LlmTextDelta("hi")
         yield LlmTextDelta(" there")
 
         yield LlmStreamEnd(
             TokenUsage(
-                input_tokens=1,
-                output_tokens=2,
-                total_tokens=3,
+                input_tokens=2,
+                output_tokens=6,
+                total_tokens=8,
                 cached_tokens=0,
                 cache_write_tokens=0,
                 reasoning_tokens=0,
