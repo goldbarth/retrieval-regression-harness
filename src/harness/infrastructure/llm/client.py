@@ -228,7 +228,7 @@ class OpenAiLlmClient:
     def complete(
         self, system_prompt: str, user_message: str, config: LlmConfig
     ) -> LlmCompletion:
-        try:
+        with _mapped_llm_errors(config.model_name):
             response = self._client.responses.create(
                 model=config.model_name,
                 instructions=system_prompt,
@@ -240,23 +240,6 @@ class OpenAiLlmClient:
                 if config.max_output_tokens is not None
                 else omit,
             )
-        except (
-            AuthenticationError,
-            PermissionDeniedError,
-            BadRequestError,
-            NotFoundError,
-        ) as exc:
-            raise LlmConfigurationError(
-                f"Request for model {config.model_name} was rejected."
-            ) from exc
-        except (RateLimitError, APIConnectionError) as exc:
-            raise LlmUnavailableError(
-                f"Model {config.model_name} is currently unavailable."
-            ) from exc
-        except OpenAIError as exc:
-            raise LlmUnavailableError(
-                f"Model {config.model_name} did not answer."
-            ) from exc
 
         details = response.incomplete_details
         incomplete_reason = details.reason if details is not None else None
@@ -299,31 +282,19 @@ class OpenAiLlmClient:
         self, system_prompt: str, user_message: str, config: LlmConfig, schema: type[T]
     ) -> LlmStructuredCompletion[T]:
         try:
-            response = self._client.responses.parse(
-                model=config.model_name,
-                instructions=system_prompt,
-                input=user_message,
-                text_format=schema,
-                temperature=config.temperature
-                if config.temperature is not None
-                else omit,
-                max_output_tokens=config.max_output_tokens
-                if config.max_output_tokens is not None
-                else omit,
-            )
-        except (
-            AuthenticationError,
-            PermissionDeniedError,
-            BadRequestError,
-            NotFoundError,
-        ) as exc:
-            raise LlmConfigurationError(
-                f"Request for model {config.model_name} was rejected."
-            ) from exc
-        except (RateLimitError, APIConnectionError) as exc:
-            raise LlmUnavailableError(
-                f"Model {config.model_name} is currently unavailable."
-            ) from exc
+            with _mapped_llm_errors(config.model_name):
+                response = self._client.responses.parse(
+                    model=config.model_name,
+                    instructions=system_prompt,
+                    input=user_message,
+                    text_format=schema,
+                    temperature=config.temperature
+                    if config.temperature is not None
+                    else omit,
+                    max_output_tokens=config.max_output_tokens
+                    if config.max_output_tokens is not None
+                    else omit,
+                )
         except ValidationError as exc:
             # Known gap: the SDK validates inside parse(), so the response object
             # and its usage are lost here. The call was billed but stays
@@ -332,10 +303,6 @@ class OpenAiLlmClient:
             # deliberately left to the SDK.
             raise LlmResponseFormatError(
                 f"Response from {config.model_name} did not satisfy {schema.__name__}."
-            ) from exc
-        except OpenAIError as exc:
-            raise LlmUnavailableError(
-                f"Model {config.model_name} did not answer."
             ) from exc
 
         parsed = response.output_parsed
@@ -440,40 +407,41 @@ class OpenAiLlmClient:
             for round_index in range(max_rounds):
                 parsed_output: BaseModel | None = None
                 try:
-                    if schema is None:
-                        response = self._client.responses.create(
-                            model=config.model_name,
-                            instructions=system_prompt,
-                            input=items,
-                            tools=tool_params,
-                            temperature=config.temperature
-                            if config.temperature is not None
-                            else omit,
-                            max_output_tokens=config.max_output_tokens
-                            if config.max_output_tokens is not None
-                            else omit,
-                        )
-                    else:
-                        # text_format and tools travel in the same request. The
-                        # schema applies to every round, but only a round that
-                        # calls no tool produces output_parsed: while the model
-                        # is still calling tools its output items are the calls,
-                        # not an answer.
-                        parsed_response = self._client.responses.parse(
-                            model=config.model_name,
-                            instructions=system_prompt,
-                            input=items,
-                            tools=tool_params,
-                            text_format=schema,
-                            temperature=config.temperature
-                            if config.temperature is not None
-                            else omit,
-                            max_output_tokens=config.max_output_tokens
-                            if config.max_output_tokens is not None
-                            else omit,
-                        )
-                        response = parsed_response
-                        parsed_output = parsed_response.output_parsed
+                    with _mapped_llm_errors(config.model_name):
+                        if schema is None:
+                            response = self._client.responses.create(
+                                model=config.model_name,
+                                instructions=system_prompt,
+                                input=items,
+                                tools=tool_params,
+                                temperature=config.temperature
+                                if config.temperature is not None
+                                else omit,
+                                max_output_tokens=config.max_output_tokens
+                                if config.max_output_tokens is not None
+                                else omit,
+                            )
+                        else:
+                            # text_format and tools travel in the same request. The
+                            # schema applies to every round, but only a round that
+                            # calls no tool produces output_parsed: while the model
+                            # is still calling tools its output items are the calls,
+                            # not an answer.
+                            parsed_response = self._client.responses.parse(
+                                model=config.model_name,
+                                instructions=system_prompt,
+                                input=items,
+                                tools=tool_params,
+                                text_format=schema,
+                                temperature=config.temperature
+                                if config.temperature is not None
+                                else omit,
+                                max_output_tokens=config.max_output_tokens
+                                if config.max_output_tokens is not None
+                                else omit,
+                            )
+                            response = parsed_response
+                            parsed_output = parsed_response.output_parsed
                 except ValidationError as exc:
                     # Only reachable on the parse() path: the SDK validates
                     # inside the call, so the response object and its usage are
@@ -482,23 +450,6 @@ class OpenAiLlmClient:
                     raise LlmResponseFormatError(
                         f"Response from {config.model_name} did not satisfy "
                         f"{schema.__name__ if schema is not None else '?'}."
-                    ) from exc
-                except (
-                    AuthenticationError,
-                    PermissionDeniedError,
-                    BadRequestError,
-                    NotFoundError,
-                ) as exc:
-                    raise LlmConfigurationError(
-                        f"Request for model {config.model_name} was rejected."
-                    ) from exc
-                except (RateLimitError, APIConnectionError) as exc:
-                    raise LlmUnavailableError(
-                        f"Model {config.model_name} is currently unavailable."
-                    ) from exc
-                except OpenAIError as exc:
-                    raise LlmUnavailableError(
-                        f"Model {config.model_name} did not answer."
                     ) from exc
 
                 usage = _to_token_usage(response.usage, config.model_name)
