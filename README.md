@@ -35,27 +35,28 @@ The [RAGGY paper](https://arxiv.org/abs/2504.13587) describes the same working p
 
 ## Status
 
-**Phase 2, in progress.** There is nothing to install yet and nothing to point at a corpus.
-The harness itself does not exist: no documents, no chunks, no embeddings, no database, no runs, no diff.
+**Phase 2, in progress.** The harness itself does not exist: no chunking, no embeddings, no database, no runs, no diff.
+What runs today is the layer underneath it, the service and the raw LLM calls the pipeline gets built into.
 
-What exists is the layer underneath it, the service skeleton and the raw LLM calls the pipeline gets built into:
+| Runs today | Where |
+|---|---|
+| A FastAPI service with `/health`, `/version`, `/analyze`, `/analyze/stream` and `/rag/analyze` | `src/harness/api/` |
+| `OpenAiLlmClient` behind five role protocols, wired through FastAPI's `Depends` | `core/interfaces.py` |
+| Answers streamed token by token over server-sent events | `api/routers/analyze.py`, `api/sse.py` |
+| Structured outputs through the Responses API with `strict`, validated against pydantic | `infrastructure/llm/client.py` |
+| Tool calling written by hand, the loop in the adapter and the tools provider-neutral | `core/tools.py` |
+| One error table both exits read, the HTTP handler and the SSE error frame | `api/errors.py` |
+| Token usage per call, cached and reasoning tokens included | `TokenUsage` in `core/interfaces.py` |
+| 13 gold questions against a vendored 24-document FastAPI docs subset | `data/gold_questions.json`, `data/corpus/` |
+| 175 tests, `mypy --strict` and `pyright --strict` clean | `tests/` |
 
-- A FastAPI service with `/health`, `/version`, `/analyze` and `/rag/analyze`
-- `OpenAiLlmClient` behind three role protocols, `TextCompleter`, `StructuredCompleter` and `ToolCompleter`, wired through FastAPI's `Depends`.
-  A caller depends on the single role it uses, so a method added for one of them cannot break a test double that never touches it.
-- Error classification split by who has to act on the failure.
-  `LlmConfigurationError` (500) and `LlmToolError` (500) are mine, a wrong model name and a tool handler that raised.
-  `LlmUnavailableError` (502) and `LlmResponseFormatError` (502) are the provider's, the second one for a response that arrives but cannot be used.
-- `LlmConfig` as a pydantic model, passed into the pipeline rather than read from a global
-- Token usage recorded per call, cached and reasoning tokens included, because they change the price and cannot be reconstructed afterwards.
-  `max_output_tokens` caps the expensive side, and a truncated answer is marked rather than returned as if it were whole.
-- Structured outputs through the Responses API with `strict`, validated against pydantic, with the judge as the first caller
-- Tool calling built by hand once, the loop in the adapter and the tools provider-neutral in `core`.
-  A run that used up its rounds or was cut off returns the partial answer with the reason attached, because those tokens were spent either way and a truncated answer has to be distinguishable from a finished one.
-- 101 tests, `mypy --strict` and `pyright --strict` clean
+The five roles are `TextCompleter`, `TextStreamer`, `StructuredCompleter`, `ToolCompleter` and `StructuredToolCompleter`.
+A caller depends on the single role it uses, so a method added for one of them cannot break a test double that never touches it.
 
-The provider is a configuration value here, not an architectural decision.
-The OpenAI client speaks to any OpenAI-compatible endpoint through a different `base_url`, so a fallback to Groq changes a setting rather than a layer.
+Errors are classified by who has to act on them.
+`LlmConfigurationError` and `LlmToolError` are mine and answer 500; `LlmUnavailableError` and `LlmResponseFormatError` are the provider's and answer 502, the second one for a response that arrives but cannot be used.
+
+Two things the list does not say. `/rag/analyze` runs the whole tool loop, but the tool it calls searches a two-section stub, not the vendored corpus: the corpus is read by the gold-question tests, which check that every expected source of every question exists on disk. And the provider is a configuration value rather than an architectural decision, because the OpenAI client speaks to any OpenAI-compatible endpoint through a different `base_url`.
 
 `strict` guarantees structure, never meaning. `scripts/schema_constraint_probe.py` measures where that line runs against the real API, and its docstring records the result with model, date and SDK version, because the answer belongs to a provider rather than to pydantic.
 
@@ -64,7 +65,36 @@ Every test around the tool path fakes the model, so they show that a system prom
 `scripts/rag_smoke.py` asks the real one, against a corpus stating facts the model cannot know, so an answer from memory reads as visibly wrong rather than merely unsourced.
 
 Retrieval, the schema and the first diff are phase 3.
-The [roadmap](docs/ROADMAP.md) says what lands when.
+[ROADMAP.md](docs/ROADMAP.md) says what lands when, and [DECISIONS.md](docs/DECISIONS.md) says why the part that already runs looks the way it does.
+
+## Running it
+
+Python 3.14 and [uv](https://docs.astral.sh/uv/). Everything except the tests needs a key.
+
+```bash
+uv sync
+echo "OPENAI_API_KEY=sk-..." > .env    # TIMEOUT=30.0 is optional
+uv run fastapi dev src/harness/main.py
+```
+
+`/health` and `/version` answer without a key; every other endpoint calls the provider and spends tokens.
+
+```bash
+curl localhost:8000/health
+curl -X POST localhost:8000/analyze -H 'content-type: application/json' -d '{"text": "..."}'
+curl -N -X POST localhost:8000/analyze/stream -H 'content-type: application/json' -d '{"text": "..."}'
+```
+
+`-N` matters on the streaming call: without it curl buffers the response and prints it in one go, which is the behaviour streaming exists to avoid.
+
+The suite fakes the provider throughout and needs no key:
+
+```bash
+uv run pytest
+uv run mypy --strict && uv run pyright && uv run ruff check
+```
+
+What a fake model cannot answer is left to the scripts in `scripts/`. Each one spends tokens, states in its docstring what it measures, and records its last result with model, date and SDK version.
 
 ## Why there is nothing to assert
 
