@@ -1,6 +1,7 @@
 # Roadmap
 
-Nothing in this document exists yet. It is the design the remaining phases get built against.
+The plan: which phase lands what, and the design the unbuilt part gets built against.
+Everything below "The planned harness" exists on paper only.
 
 The [README](../README.md) carries what runs today; this file carries what is intended.
 The split exists because a status section that grows with every phase, next to a plan that does not shrink
@@ -15,8 +16,8 @@ Each phase leaves something that runs.
 | Phase | Status | Leaves running |
 |---|---|---|
 | 1 - The service skeleton | ✅ | FastAPI service, pydantic models, pytest suite |
-| 2 - The raw LLM layer | in progress | Structured outputs, tool calling, configuration object, gold questions as typed structure |
-| 3 - Retrieval and the harness | planned | Manual pipeline, pgvector schema, first diff between two runs |
+| 2 - The raw LLM layer | ✅ | Structured outputs, tool calling, configuration object, gold questions as typed structure |
+| 3 - Retrieval and the harness | next | Manual pipeline, pgvector schema, first diff between two runs |
 | 4 - Production concerns | planned | ragas scorer, LangSmith tracing, token budgets, deployment |
 
 ### Phase 1 - The service skeleton ✅
@@ -24,13 +25,13 @@ Each phase leaves something that runs.
 A FastAPI service written by hand, with pydantic models and a pytest suite from the first endpoint on.
 It exists to have somewhere for the LLM layer to sit, and it is what `/health`, `/version` and the test setup come from.
 
-### Phase 2 - The raw LLM layer (in progress)
+### Phase 2 - The raw LLM layer ✅
 
 Direct API calls without a framework: messages, system prompts, streaming, structured outputs validated against pydantic, and tool calling.
 The configuration object comes first in this phase, ahead of the code that would otherwise hard-wire its values.
 Gold questions are defined here as a typed structure, ahead of the database that will hold them.
 
-### Phase 3 - Retrieval and the harness
+### Phase 3 - Retrieval and the harness (next)
 
 The pipeline built by hand first: ingestion, chunking, retrieval, generation.
 Then pgvector on PostgreSQL, the schema through SQLAlchemy and Alembic, and the first diff between two runs.

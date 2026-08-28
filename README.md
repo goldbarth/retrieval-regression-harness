@@ -7,7 +7,7 @@
 
 **A regression test for a system that gives different answers to the same question.**
 
-[![Status](https://img.shields.io/badge/status-phase%202%20in%20progress-orange?style=flat-square)](#status)
+[![Status](https://img.shields.io/badge/status-phase%202%20complete-brightgreen?style=flat-square)](#status)
 ![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 
@@ -37,8 +37,8 @@ This harness keeps enough of each run to turn that impression into a diff.
 
 ## Status
 
-**Phase 2, in progress.** The harness itself does not exist: no chunking, no embeddings, no database, no runs, no diff.
-What runs today is the layer underneath it, the service and the raw LLM calls the pipeline gets built into.
+**Phase 2 is done. Phase 3 has not started.** The harness itself does not exist yet: no chunking, no embeddings, no database, no runs, no diff.
+What phase 2 leaves behind is the layer underneath it, the service and the raw LLM calls the pipeline gets built into.
 
 | Runs today                                                                                     | Where                                      |
 |------------------------------------------------------------------------------------------------|--------------------------------------------|
@@ -81,7 +81,7 @@ spends tokens against the real API:
 | Schema *accepted* vs. constraint *honored* | `scripts/schema_constraint_probe.py` | Recorded in the docstring with model, date and SDK version - the answer belongs to the provider, not to pydantic                      |
 | Prompt *passed on* vs. prompt *followed*   | `scripts/rag_smoke.py`               | Run against a corpus stating facts the model can't know, so an answer from memory reads as visibly wrong rather than merely unsourced |
 
-Retrieval, the schema and the first diff are phase 3.
+Retrieval, the schema and the first diff are phase 3, and that is what comes next.
 [ROADMAP.md](docs/ROADMAP.md) says what lands when, and [DECISIONS.md](docs/DECISIONS.md) says why the part that already runs looks the way it does.
 
 ## Running it
