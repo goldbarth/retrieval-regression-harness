@@ -13,6 +13,13 @@ its number and gets a note.
 Intentions about parts that are not built yet live in [ROADMAP.md](ROADMAP.md) instead,
 and move here once something runs against them.
 
+| # | Decision |
+|---|---|
+| [1](#1-five-role-protocols-not-one-client-interface) | Five role protocols, not one client interface |
+| [2](#2-one-error-ladder-one-table-looked-up-along-the-mro) | One error ladder, one table, looked up along the MRO |
+| [3](#3-tools-are-defined-provider-neutrally-in-core) | Tools are defined provider-neutrally in `core` |
+| [4](#4-strict-guarantees-structure-never-meaning) | `strict` guarantees structure, never meaning |
+
 ## 1. Five role protocols, not one client interface
 
 *Decided 2026-08-18, extended 2026-08-19 and 2026-08-24. `src/harness/core/interfaces.py`.*
