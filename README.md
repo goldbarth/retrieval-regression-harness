@@ -7,9 +7,9 @@
 
 **A regression test for a system that gives different answers to the same question.**
 
-[![Status](https://img.shields.io/badge/status-phase%202%20complete-brightgreen?style=flat-square)](#status)
-![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?style=flat-square&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+[![Status](https://img.shields.io/badge/status-phase%202%20complete-1BA897?style=flat-square&labelColor=26201A)](#status)
+![Python 3.14](https://img.shields.io/badge/Python-3.14-14807A?style=flat-square&logo=python&logoColor=2DD4BF&labelColor=26201A)
+![FastAPI](https://img.shields.io/badge/-FastAPI-14807A?style=flat-square&logo=fastapi&logoColor=2DD4BF&labelColor=26201A)
 
 </div>
 
