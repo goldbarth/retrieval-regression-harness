@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="retrieval-regression-harness">
 <title>rrh Bildmarke (light)</title>
 <g transform="translate(12,14)">
-<rect x="0" y="0" width="176" height="14" rx="6" fill="#B9DEDA"/>
-<rect x="0" y="18" width="168" height="14" rx="6" fill="#0E5F5A"/>
-<rect x="0" y="35" width="125" height="14" rx="6" fill="#B9DEDA"/>
-<rect x="0" y="53" width="131" height="14" rx="6" fill="#0E5F5A"/>
-<rect x="0" y="70" width="147" height="14" rx="6" fill="#B9DEDA"/>
-<rect x="0" y="88" width="77" height="14" rx="6" fill="#A86F22"/>
-<rect x="0" y="105" width="104" height="14" rx="6" fill="#B9DEDA"/>
-<rect x="0" y="123" width="110" height="14" rx="6" fill="#0E5F5A"/>
-<rect x="0" y="140" width="160" height="14" rx="6" fill="#B9DEDA"/>
-<rect x="0" y="158" width="157" height="14" rx="6" fill="#0E5F5A"/>
+<rect x="0" y="0" width="176" height="14" rx="6" fill="#397D6E"/>
+<rect x="0" y="18" width="168" height="14" rx="6" fill="#0D6457"/>
+<rect x="0" y="35" width="125" height="14" rx="6" fill="#397D6E"/>
+<rect x="0" y="53" width="131" height="14" rx="6" fill="#0D6457"/>
+<rect x="0" y="70" width="147" height="14" rx="6" fill="#397D6E"/>
+<rect x="0" y="88" width="77" height="14" rx="6" fill="#083F37"/>
+<rect x="0" y="105" width="104" height="14" rx="6" fill="#397D6E"/>
+<rect x="0" y="123" width="110" height="14" rx="6" fill="#0D6457"/>
+<rect x="0" y="140" width="160" height="14" rx="6" fill="#397D6E"/>
+<rect x="0" y="158" width="157" height="14" rx="6" fill="#0D6457"/>
 </g>
 </svg>

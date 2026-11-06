@@ -1,16 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 710 300" width="710" height="300" role="img" aria-label="retrieval-regression-harness"><style><![CDATA[@font-face{font-family:"IBM Plex Mono";font-weight:500;src:url(data:font/woff2;base64,) format("woff2");}]]></style>
-<title>rrh — retrieval regression harness (light)</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 710 300" width="710" height="300" role="img" aria-label="retrieval-regression-harness">
+<title>rrh - retrieval regression harness (light)</title>
 <g>
-<rect x="48" y="88" width="127" height="10" rx="4" fill="#B9DEDA"/>
-<rect x="48" y="101" width="121" height="10" rx="4" fill="#0E5F5A"/>
-<rect x="48" y="113" width="90" height="10" rx="4" fill="#B9DEDA"/>
-<rect x="48" y="126" width="94" height="10" rx="4" fill="#0E5F5A"/>
-<rect x="48" y="138" width="106" height="10" rx="4" fill="#B9DEDA"/>
-<rect x="48" y="151" width="55" height="10" rx="4" fill="#A86F22"/>
-<rect x="48" y="164" width="75" height="10" rx="4" fill="#B9DEDA"/>
-<rect x="48" y="177" width="79" height="10" rx="4" fill="#0E5F5A"/>
-<rect x="48" y="189" width="115" height="10" rx="4" fill="#B9DEDA"/>
-<rect x="48" y="202" width="113" height="10" rx="4" fill="#0E5F5A"/>
+<rect x="48" y="88" width="127" height="10" rx="4" fill="#397D6E"/>
+<rect x="48" y="101" width="121" height="10" rx="4" fill="#0D6457"/>
+<rect x="48" y="113" width="90" height="10" rx="4" fill="#397D6E"/>
+<rect x="48" y="126" width="94" height="10" rx="4" fill="#0D6457"/>
+<rect x="48" y="138" width="106" height="10" rx="4" fill="#397D6E"/>
+<rect x="48" y="151" width="55" height="10" rx="4" fill="#083F37"/>
+<rect x="48" y="164" width="75" height="10" rx="4" fill="#397D6E"/>
+<rect x="48" y="177" width="79" height="10" rx="4" fill="#0D6457"/>
+<rect x="48" y="189" width="115" height="10" rx="4" fill="#397D6E"/>
+<rect x="48" y="202" width="113" height="10" rx="4" fill="#0D6457"/>
 </g>
-<text x="247" y="199" font-family="'IBM Plex Mono', ui-monospace, monospace" font-weight="500" font-size="141" letter-spacing="-3" fill="#1A1613"><tspan fill="#A86F22">[</tspan>rrh<tspan fill="#A86F22">]</tspan></text>
+<path fill="#141718" d="M339.32 186.59H358.63V138.65H339.32V126.24H374V145.56H374.85Q375.84 141.75 377.67 138.23Q379.5 134.7 382.32 132.1Q385.14 129.49 389.23 127.87Q393.32 126.24 398.82 126.24H407.56V140.91H393.18Q384.72 140.91 379.36 145.91Q374 150.92 374 159.38V186.59H394.73V199H339.32ZM420.92 186.59H440.23V138.65H420.92V126.24H455.6V145.56H456.45Q457.44 141.75 459.27 138.23Q461.1 134.7 463.92 132.1Q466.74 129.49 470.83 127.87Q474.92 126.24 480.42 126.24H489.16V140.91H474.78Q466.32 140.91 460.96 145.91Q455.6 150.92 455.6 159.38V186.59H476.33V199H420.92ZM503.64 94.66H519.01V138.65H519.72Q520.85 135.83 522.61 133.22Q524.37 130.62 526.91 128.71Q529.45 126.81 532.83 125.68Q536.22 124.55 540.73 124.55Q551.73 124.55 558.49 131.74Q565.26 138.93 565.26 152.19V199H549.89V154.44Q549.89 137.1 534.81 137.1Q531.84 137.1 529.02 137.88Q526.2 138.65 523.95 140.2Q521.69 141.75 520.35 144.15Q519.01 146.55 519.01 149.65V199H503.64Z"/>
+<path fill="#0D6457" d="M276.19 218.46V91.84H318.35V102.84H288.88V207.46H318.35V218.46ZM628.81 91.84V218.46H586.65V207.46H616.12V102.84H586.65V91.84Z"/>
 </svg>
